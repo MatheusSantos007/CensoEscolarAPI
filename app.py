@@ -1,148 +1,103 @@
 from flask import Flask, request, jsonify
 import sqlite3
+from marshmallow import Schema, fields, validate, ValidationError
 
-from models.InstituicaoEnsino import InstituicaoEnsino
+from utils import get_db_connection, validate_data
+
 
 app = Flask(__name__)
+conn = get_db_connection()
 
-@app.route("/")
-def index():
-    versao = {"versao": "0.0.1"}
-    return jsonify(versao), 200
+# --- Schemas Marshmallow para validação ---
+
+class InstituicaoSchema(Schema):
+    NO_ENTIDADE = fields.Str(required=True, validate=validate.Length(min=3))
+    CO_ENTIDADE = fields.Int(required=True)
+    QT_MAT_BAS = fields.Int(required=True)
+
+instituicao_schema = InstituicaoSchema()
+
+# --- ROTAS ---
+
+# ===== INSTITUIÇÕES =====
 
 @app.get("/instituicoes")
-def instituicoesResource():
-    print("Get - Instituições")
+def get_instituicoes():
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 50))
+    offset = (page - 1) * per_page
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT NO_ENTIDADE, CO_ENTIDADE, QT_MAT_BAS FROM instituicoes LIMIT ? OFFSET ?", (per_page, offset))
+    rows = cursor.fetchall()
+    conn.close()
 
-    try:
-        instituicoesEnsino = []
-
-        # Pegando os parâmetros da requisição (page e per_page)
-        page = int(request.args.get('page', 1))  # Página padrão: 1
-        per_page = int(request.args.get('per_page', 50))  # Número padrão de registros por página
-        offset = (page - 1) * per_page  # Calcula o deslocamento
-
-        with sqlite3.connect('dados_nordeste.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT NO_ENTIDADE, CO_ENTIDADE, QT_MAT_BAS 
-                FROM instituicoes 
-                LIMIT ? OFFSET ?
-            """, (per_page, offset))
-            resultSet = cursor.fetchall()
-
-            for row in resultSet:
-                no_entidade, co_entidade, qt_mat_bas = row
-                instituicaoEnsino = {
-                    "no_entidade": no_entidade,
-                    "co_entidade": co_entidade,
-                    "qt_mat_bas": qt_mat_bas
-                }
-                instituicoesEnsino.append(instituicaoEnsino)
-
-    except sqlite3.Error as e:
-        print(f"Erro no banco de dados: {e}")
-        return jsonify({"mensagem": "Problema com o banco de dados."}), 500
-
+    instituicoes = [dict(row) for row in rows]
     return jsonify({
         "page": page,
         "per_page": per_page,
-        "total_registros": len(instituicoesEnsino),
-        "dados": instituicoesEnsino
+        "dados": instituicoes
     }), 200
 
-def validarInstituicao(content):
-    if not isinstance(content, dict):
-        return False
-    if len(content.get('NO_ENTIDADE', '')) < 3 or content['NO_ENTIDADE'].isdigit():
-        return False
-    if not content.get('CO_ENTIDADE', '').isdigit():
-        return False
-    if not content.get('QT_MAT_BAS', '').isdigit():
-        return False
-    return True
-
 @app.post("/instituicoes")
-def instituicaoInsercaoResource():
-    print("Post - Instituição")
-    instituicaoJson = request.get_json()
+def post_instituicao():
+    data = request.get_json()
+    validated, errors = validate_data(InstituicaoSchema(), data)
+    if errors:
+        return jsonify({"mensagem": "Dados inválidos", "erros": errors}), 400
 
-    if validarInstituicao(instituicaoJson):
-        no_entidade = instituicaoJson['NO_ENTIDADE']
-        co_entidade = instituicaoJson['CO_ENTIDADE']
-        qt_mat_bas = instituicaoJson['QT_MAT_BAS']
-
-        with sqlite3.connect('dados_nordeste.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'INSERT INTO instituicoes (NO_ENTIDADE, CO_ENTIDADE, QT_MAT_BAS) VALUES(?, ?, ?)',
-                (no_entidade, co_entidade, qt_mat_bas))
-            conn.commit()
-            id = cursor.lastrowid
-
-        instituicaoEnsino = InstituicaoEnsino(id, no_entidade, co_entidade, qt_mat_bas)
-        return jsonify(instituicaoEnsino.toDict()), 201
-
-    return jsonify({"mensagem": "Dados inválidos"}), 400
-
-@app.route("/instituicoes/<int:co_entidade>", methods=["DELETE"])
-def instituicaoRemocaoResource(co_entidade):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        with sqlite3.connect('dados_nordeste.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM instituicoes WHERE CO_ENTIDADE = ?", (co_entidade,))
-            conn.commit()
-
-            if cursor.rowcount > 0:
-                return jsonify({"mensagem": "Instituição removida"}), 200
-            return jsonify({"mensagem": "Instituição não encontrada"}), 404
-    except sqlite3.Error as e:
-        print(f"Erro no banco de dados: {e}")
-        return jsonify({"mensagem": "Problema com o banco de dados."}), 500
-
-@app.route("/instituicoes/<int:co_entidade>", methods=["PUT"])
-def instituicaoAtualizacaoResource(co_entidade):
-    print("Put - Instituição")
-    instituicaoJson = request.get_json()
-
-    if not validarInstituicao(instituicaoJson):
-        return jsonify({"mensagem": "Dados inválidos"}), 400
-
-    with sqlite3.connect('dados_nordeste.db') as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE instituicoes 
-            SET NO_ENTIDADE = ?, QT_MAT_BAS = ?
-            WHERE CO_ENTIDADE = ?
-        """, (instituicaoJson["NO_ENTIDADE"], instituicaoJson["QT_MAT_BAS"], co_entidade))
+        cursor.execute(
+            "INSERT INTO instituicoes (NO_ENTIDADE, CO_ENTIDADE, QT_MAT_BAS) VALUES (?, ?, ?)",
+            (validated['NO_ENTIDADE'], validated['CO_ENTIDADE'], validated['QT_MAT_BAS'])
+        )
         conn.commit()
+        conn.close()
+        return jsonify({"mensagem": "Instituição inserida"}), 201
+    except sqlite3.IntegrityError as e:
+        conn.close()
+        return jsonify({"mensagem": "Erro ao inserir instituição", "erro": str(e)}), 400
 
-        if cursor.rowcount > 0:
-            return jsonify({"mensagem": "Instituição atualizada"}), 200
+@app.put("/instituicoes/<int:co_entidade>")
+def put_instituicao(co_entidade):
+    data = request.get_json()
+    # For update, CO_ENTIDADE in payload can be optional or must match URL
+    if 'CO_ENTIDADE' in data and data['CO_ENTIDADE'] != co_entidade:
+        return jsonify({"mensagem": "CO_ENTIDADE no corpo não corresponde ao da URL"}), 400
+    data['CO_ENTIDADE'] = co_entidade
+    validated, errors = validate_data(InstituicaoSchema(), data)
+    if errors:
+        return jsonify({"mensagem": "Dados inválidos", "erros": errors}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE instituicoes 
+        SET NO_ENTIDADE = ?, QT_MAT_BAS = ?
+        WHERE CO_ENTIDADE = ?
+    """, (validated['NO_ENTIDADE'], validated['QT_MAT_BAS'], co_entidade))
+    conn.commit()
+    updated = cursor.rowcount
+    conn.close()
+
+    if updated == 0:
         return jsonify({"mensagem": "Instituição não encontrada"}), 404
+    return jsonify({"mensagem": "Instituição atualizada"}), 200
 
-@app.route("/instituicoes/<int:co_entidade>", methods=["GET"])
-def instituicoesByIdResource(co_entidade):
-    try:
-        with sqlite3.connect('dados_nordeste.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT NO_ENTIDADE, CO_ENTIDADE, QT_MAT_BAS FROM instituicoes WHERE CO_ENTIDADE = ?", (co_entidade,))
-            row = cursor.fetchone()
+@app.delete("/instituicoes/<int:co_entidade>")
+def delete_instituicao(co_entidade):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM instituicoes WHERE CO_ENTIDADE = ?", (co_entidade,))
+    conn.commit()
+    deleted = cursor.rowcount
+    conn.close()
+    if deleted == 0:
+        return jsonify({"mensagem": "Instituição não encontrada"}), 404
+    return jsonify({"mensagem": "Instituição deletada"}), 200
 
-            if row:
-                no_entidade, co_entidade, qt_mat_bas = row
-                instituicaoEnsino = {
-                    "no_entidade": no_entidade,
-                    "co_entidade": co_entidade,
-                    "qt_mat_bas": qt_mat_bas
-                }
-                return jsonify(instituicaoEnsino), 200
-
-            return jsonify({"mensagem": "Instituição não encontrada"}), 404
-
-    except sqlite3.Error as e:
-        print(f"Erro no banco de dados: {e}")
-        return jsonify({"mensagem": "Problema com o banco de dados."}), 500
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
+
